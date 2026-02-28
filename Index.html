@@ -1,0 +1,263 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Baby Name Voting</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 20px; }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    h1 { margin: 0 0 6px; }
+    .muted { color: #666; font-size: 14px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
+    input { padding: 10px; font-size: 16px; }
+    button { padding: 10px 12px; font-size: 15px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; vertical-align: top; }
+    th { background: #fafafa; position: sticky; top: 0; }
+    .pill { display: inline-block; padding: 3px 8px; border: 1px solid #ddd; border-radius: 999px; font-size: 12px; }
+    .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+    .small { font-size: 12px; color: #666; }
+    .danger { border-color: #f3c0c0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Baby Name Voting</h1>
+    <div class="muted" id="status">Loading…</div>
+
+    <div class="row">
+      <input id="displayName" placeholder="Your name (for showing who voted)" />
+      <button id="saveNameBtn">Save Name</button>
+      <span class="pill" id="meTag"></span>
+    </div>
+
+    <div class="row">
+      <input id="newName" placeholder="Add a new baby name" />
+      <button id="addNameBtn">Add Name</button>
+      <span class="small">Tip: names are de-duplicated by normalized id.</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 26%">Name</th>
+          <th style="width: 16%">Vote</th>
+          <th style="width: 10%">Count</th>
+          <th>Who Voted (comma separated)</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <script type="module">
+    // Use one consistent Firebase JS SDK version across imports.
+    // Latest as of Feb 2026 is 12.9.0. :contentReference[oaicite:3]{index=3}
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-auth.js";
+    import {
+      getFirestore, collection, doc, setDoc, serverTimestamp,
+      onSnapshot, query, orderBy,
+      runTransaction, deleteField
+    } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-firestore.js";
+
+    // 1) Paste your firebaseConfig here:
+    const firebaseConfig = YOUR_FIREBASE_CONFIG_HERE;
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const COL = "babyNames";
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+    const tbody = $("tbody");
+
+    // Local "soft login" name (shown publicly in voters list)
+    const LS_KEY = "babyVoting_displayName";
+    function getDisplayName() {
+      return (localStorage.getItem(LS_KEY) || "").trim();
+    }
+    function setDisplayName(name) {
+      localStorage.setItem(LS_KEY, name.trim());
+      renderMeTag();
+    }
+    function renderMeTag() {
+      const n = getDisplayName();
+      $("displayName").value = n;
+      $("meTag").textContent = n ? `You: ${n}` : "You: (not set)";
+      $("meTag").classList.toggle("danger", !n);
+    }
+
+    function normalizeId(name) {
+      return name.trim().toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9\-]/g, "");
+    }
+
+    async function ensureAnonAuth() {
+      // silent auth: no UI, free, gives stable uid per device
+      await signInAnonymously(auth);
+    }
+
+    function votersToCsv(votersMap) {
+      if (!votersMap) return "";
+      const names = Object.values(votersMap).map(x => (x || "").toString().trim()).filter(Boolean);
+      // de-dup displayed names (optional)
+      return Array.from(new Set(names)).join(", ");
+    }
+
+    function hasVoted(docData, uid) {
+      return !!(docData?.voters && docData.voters[uid]);
+    }
+
+    function renderRow(id, data, uid) {
+      const voted = hasVoted(data, uid);
+      const votersCsv = votersToCsv(data.voters);
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(data.name || id)}</strong></td>
+        <td>
+          <div class="btns">
+            <button data-act="vote" ${voted ? "disabled" : ""}>Vote</button>
+            <button data-act="unvote" ${!voted ? "disabled" : ""}>Unvote</button>
+          </div>
+        </td>
+        <td>${data.voteCount ?? 0}</td>
+        <td>${escapeHtml(votersCsv)}</td>
+      `;
+
+      tr.querySelector('[data-act="vote"]').addEventListener("click", () => vote(id, true));
+      tr.querySelector('[data-act="unvote"]').addEventListener("click", () => vote(id, false));
+
+      return tr;
+    }
+
+    async function vote(docId, isVote) {
+      const user = auth.currentUser;
+      if (!user) return alert("Not signed in yet. Try again in 2 seconds.");
+
+      const uid = user.uid;
+      const displayName = getDisplayName();
+      if (!displayName) return alert("Please enter your name at the top and click Save Name.");
+
+      const ref = doc(db, COL, docId);
+
+      statusEl.textContent = isVote ? "Recording vote…" : "Removing vote…";
+
+      try {
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(ref);
+          if (!snap.exists()) throw new Error("Name not found (maybe deleted). Refresh.");
+
+          const data = snap.data();
+          const voters = data.voters || {};
+          const already = !!voters[uid];
+
+          if (isVote) {
+            if (already) return; // no-op
+            // add voter and increment count
+            voters[uid] = displayName;
+            tx.update(ref, {
+              voters,
+              voteCount: (data.voteCount || 0) + 1
+            });
+          } else {
+            if (!already) return; // no-op
+            // remove voter and decrement count
+            delete voters[uid];
+            tx.update(ref, {
+              voters,
+              voteCount: Math.max(0, (data.voteCount || 0) - 1)
+            });
+          }
+        });
+
+        statusEl.textContent = "Done.";
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "Error.";
+        alert(e.message || "Failed.");
+      }
+    }
+
+    async function addName() {
+      const user = auth.currentUser;
+      if (!user) return alert("Not signed in yet. Try again.");
+      const name = ($("newName").value || "").trim();
+      if (!name) return;
+
+      const docId = normalizeId(name);
+      if (!docId) return alert("Name is invalid after normalization. Try letters/numbers.");
+
+      const ref = doc(db, COL, docId);
+
+      statusEl.textContent = "Adding name…";
+
+      try {
+        // Create only if not exists
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(ref);
+          if (snap.exists()) throw new Error("That name already exists.");
+          tx.set(ref, {
+            name,
+            voteCount: 0,
+            voters: {},
+            createdAt: serverTimestamp()
+          });
+        });
+
+        $("newName").value = "";
+        statusEl.textContent = "Name added.";
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "Error.";
+        alert(e.message || "Failed to add.");
+      }
+    }
+
+    function escapeHtml(str) {
+      return (str ?? "").toString()
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    // UI hooks
+    $("saveNameBtn").addEventListener("click", () => {
+      const n = ($("displayName").value || "").trim();
+      if (!n) return alert("Please enter a name.");
+      setDisplayName(n);
+      statusEl.textContent = "Saved your name.";
+    });
+
+    $("addNameBtn").addEventListener("click", addName);
+
+    // Start
+    renderMeTag();
+    statusEl.textContent = "Signing in…";
+
+    await ensureAnonAuth();
+
+    onAuthStateChanged(auth, (user) => {
+      if (!user) return;
+      statusEl.textContent = "Loaded. You can vote.";
+
+      // Live list
+      const q = query(collection(db, COL), orderBy("voteCount", "desc"));
+      onSnapshot(q, (snap) => {
+        tbody.innerHTML = "";
+        snap.forEach((d) => {
+          const row = renderRow(d.id, d.data(), user.uid);
+          tbody.appendChild(row);
+        });
+      });
+    });
+  </script>
+</body>
+</html>
