@@ -52,15 +52,20 @@
   </div>
 
   <script type="module">
-    // Use one consistent Firebase JS SDK version across imports.
-    // Latest as of Feb 2026 is 12.9.0. :contentReference[oaicite:3]{index=3}
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-auth.js";
-    import {
-      getFirestore, collection, doc, setDoc, serverTimestamp,
-      onSnapshot, query, orderBy,
-      runTransaction, deleteField
-    } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-firestore.js";
+    <script type="module">
+  // Firebase JS SDK imports (ES modules)
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-auth.js";
+  import {
+    getFirestore,
+    collection,
+    doc,
+    serverTimestamp,
+    onSnapshot,
+    query,
+    orderBy,
+    runTransaction
+  } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-firestore.js";;
 
     // 1) Paste your firebaseConfig here:
     const firebaseConfig = {
