@@ -63,7 +63,14 @@
     } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-firestore.js";
 
     // 1) Paste your firebaseConfig here:
-    const firebaseConfig = YOUR_FIREBASE_CONFIG_HERE;
+    const firebaseConfig = {
+  apiKey: "AIzaSyCyEfMS8qU2EhlC1j3OHJiQVhiotsZh2pU",
+  authDomain: "baby-name-e2ee9.firebaseapp.com",
+  projectId: "baby-name-e2ee9",
+  storageBucket: "baby-name-e2ee9.firebasestorage.app",
+  messagingSenderId: "12580622829",
+  appId: "1:12580622829:web:51fe48d6b9ee053f51d7e4"
+};
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
